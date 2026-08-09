@@ -1,0 +1,30 @@
+{
+  "name": "sonos-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sonosctl": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "pnpm biome check . && pnpm typecheck && pnpm test && pnpm build",
+    "dev": "tsx src/cli.ts",
+    "format": "biome format --write .",
+    "lint": "biome check .",
+    "package": "bun build src/cli.ts --compile --outfile dist/sonosctl",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "15.0.0",
+    "fast-xml-parser": "5.10.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@types/node": "26.2.0",
+    "tsx": "4.23.11",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}
