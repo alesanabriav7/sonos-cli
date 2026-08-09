@@ -29,7 +29,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
       - uses: oven-sh/setup-bun@v2
+      - run: pnpm install --frozen-lockfile
       - name: Build standalone executable
         env:
           TARGET: ${{ matrix.target }}
@@ -75,4 +81,3 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             --verify-tag
-
