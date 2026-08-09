@@ -2,16 +2,18 @@
 import { Command, Option } from "commander";
 import { findService, inspectDevice, serviceShortName } from "./device.js";
 import { discoverLocations } from "./discovery.js";
-import { assertActionAuthorized, classifyAction } from "./risk.js";
-import { inspectService, validateInputs } from "./scpd.js";
+import { errorEnvelope, successEnvelope } from "./output.js";
+import { executeRawAction } from "./raw.js";
+import { classifyAction } from "./risk.js";
+import { inspectService } from "./scpd.js";
 import {
   getAllSettings,
   getSetting,
+  listSettingCapabilities,
   SETTINGS,
   type SettingName,
   setSetting,
 } from "./settings.js";
-import { callSoap } from "./soap.js";
 import { getTvAudioStatus } from "./status.js";
 import type { Device } from "./types.js";
 
@@ -21,7 +23,10 @@ interface GlobalOptions {
 }
 
 function print(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  const compact = program.opts<{ compact?: boolean }>().compact ?? false;
+  process.stdout.write(
+    `${JSON.stringify(successEnvelope(value), null, compact ? 0 : 2)}\n`,
+  );
 }
 
 async function resolveDevice(options: GlobalOptions): Promise<Device> {
@@ -57,10 +62,28 @@ function parseArguments(values: string[]): Record<string, string> {
 const program = new Command()
   .name("sonosctl")
   .description("Deterministic, local-first Sonos configuration CLI")
-  .version("0.1.0")
+  .version("0.2.0")
   .option("--host <host>", "Sonos IP or device-description URL")
   .option("--timeout <ms>", "SSDP discovery timeout", "1500")
+  .option("--compact", "Emit compact single-line JSON for machine callers")
   .showHelpAfterError();
+
+program
+  .command("capabilities")
+  .description(
+    "Describe the stable high-level interface without contacting Sonos",
+  )
+  .action(() => {
+    print({
+      schemaVersion: 1,
+      mutationWorkflow: [
+        "Run set <setting> <value> --dry-run",
+        "Inspect data.outcome and data.changed",
+        "Apply only with explicit authority using --confirm <setting>",
+      ],
+      settings: listSettingCapabilities(),
+    });
+  });
 
 program
   .command("discover")
@@ -112,10 +135,20 @@ program
   .command("set")
   .argument("<setting>")
   .argument("<value>")
-  .requiredOption("--confirm <setting>", "Confirm the exact setting name")
-  .description("Write one allowlisted setting and verify it by reading back")
+  .option("--dry-run", "Validate and read current state without writing")
+  .option(
+    "--confirm <setting>",
+    "Confirm the exact setting name for a real write",
+  )
+  .description(
+    "Plan or apply one allowlisted setting with read-back verification",
+  )
   .action(
-    async (setting: string, value: string, options: { confirm: string }) => {
+    async (
+      setting: string,
+      value: string,
+      options: { confirm?: string; dryRun?: boolean },
+    ) => {
       if (!(setting in SETTINGS))
         throw new Error(`Unknown setting: ${setting}`);
       print(
@@ -123,7 +156,12 @@ program
           await resolveDevice(program.opts<GlobalOptions>()),
           setting as SettingName,
           value,
-          options.confirm,
+          {
+            ...(options.confirm === undefined
+              ? {}
+              : { confirm: options.confirm }),
+            ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+          },
         ),
       );
     },
@@ -153,7 +191,7 @@ program
 
 program
   .command("snapshot")
-  .description("Emit a restorable high-level settings snapshot")
+  .description("Emit a read-only high-level settings snapshot")
   .action(async () => {
     const device = await resolveDevice(program.opts<GlobalOptions>());
     const settings = await getAllSettings(device);
@@ -276,7 +314,13 @@ api
   .option("--allow-write", "Acknowledge a raw write")
   .option("--allow-destructive", "Acknowledge a destructive raw write")
   .option("--confirm <action>", "Confirm the exact action name")
-  .description("Invoke a live-declared SOAP action after schema validation")
+  .option(
+    "--dry-run",
+    "Validate and show the SOAP plan without invoking the action",
+  )
+  .description(
+    "Plan or invoke a live-declared SOAP action after schema validation",
+  )
   .action(
     async (
       serviceName: string,
@@ -286,6 +330,7 @@ api
         allowWrite?: boolean;
         allowDestructive?: boolean;
         confirm?: string;
+        dryRun?: boolean;
       },
     ) => {
       const service = findService(
@@ -293,20 +338,15 @@ api
         serviceName,
       );
       const schema = await inspectService(service);
-      const risk = classifyAction(actionName);
-      assertActionAuthorized(actionName, risk, options);
-      const inputs = validateInputs(
-        schema,
-        actionName,
-        parseArguments(options.arg),
+      print(
+        await executeRawAction(
+          service,
+          schema,
+          actionName,
+          parseArguments(options.arg),
+          options,
+        ),
       );
-      print({
-        service: serviceShortName(service.serviceType),
-        action: actionName,
-        risk,
-        inputs,
-        output: await callSoap(service, actionName, inputs),
-      });
     },
   );
 
@@ -315,8 +355,6 @@ program.configureOutput({
 });
 
 program.parseAsync().catch((error: unknown) => {
-  process.stderr.write(
-    `${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`,
-  );
+  process.stderr.write(`${JSON.stringify(errorEnvelope(error))}\n`);
   process.exitCode = 1;
 });

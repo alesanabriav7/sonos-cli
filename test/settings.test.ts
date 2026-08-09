@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { HttpClient } from "../src/device.js";
-import { encode, SETTINGS, setSetting } from "../src/settings.js";
+import {
+  encode,
+  listSettingCapabilities,
+  SETTINGS,
+  setSetting,
+} from "../src/settings.js";
 import type { Device } from "../src/types.js";
 
 const device: Device = {
@@ -55,9 +60,39 @@ describe("setting input validation", () => {
         return soapResponse("GetBass", { CurrentBass: "4" });
       },
     };
-    const result = await setSetting(device, "bass", "4", "bass", client);
+    const result = await setSetting(device, "bass", "4", {
+      confirm: "bass",
+      client,
+    });
     expect(result.changed).toBe(false);
+    expect(result.outcome).toBe("unchanged");
+    expect(result.sideEffect).toBe("none");
     expect(methods).toEqual(["POST"]);
+  });
+
+  it("dry-runs a change with one read and no setter call", async () => {
+    const actions: string[] = [];
+    const client: HttpClient = {
+      fetch: async (_input, init) => {
+        const soapAction = new Headers(init?.headers).get("SOAPAction") ?? "";
+        actions.push(soapAction.split("#").at(-1)?.replace('"', "") ?? "");
+        return soapResponse("GetBass", { CurrentBass: "3" });
+      },
+    };
+    const result = await setSetting(device, "bass", "4", {
+      dryRun: true,
+      client,
+    });
+    expect(result).toMatchObject({
+      outcome: "dry_run",
+      before: 3,
+      requested: 4,
+      after: null,
+      changed: true,
+      dryRun: true,
+      sideEffect: "none",
+    });
+    expect(actions).toEqual(["GetBass"]);
   });
 
   it("performs read, write, read-back for a simulated change", async () => {
@@ -76,7 +111,10 @@ describe("setting input validation", () => {
         return response;
       },
     };
-    const result = await setSetting(device, "bass", "4", "bass", client);
+    const result = await setSetting(device, "bass", "4", {
+      confirm: "bass",
+      client,
+    });
     expect(result).toMatchObject({
       before: 3,
       requested: 4,
@@ -84,5 +122,38 @@ describe("setting input validation", () => {
       changed: true,
     });
     expect(actions).toEqual(["GetBass", "SetBass", "GetBass"]);
+  });
+
+  it("marks a read-back mismatch as outcome unknown", async () => {
+    const responses = [
+      soapResponse("GetBass", { CurrentBass: "3" }),
+      soapResponse("SetBass", {}),
+      soapResponse("GetBass", { CurrentBass: "3" }),
+    ];
+    const client: HttpClient = {
+      fetch: async () => {
+        const response = responses.shift();
+        if (!response) throw new Error("Unexpected transport call");
+        return response;
+      },
+    };
+    await expect(
+      setSetting(device, "bass", "4", { confirm: "bass", client }),
+    ).rejects.toMatchObject({ name: "OutcomeUnknownError" });
+  });
+
+  it("publishes a complete machine-readable capability contract", () => {
+    const capabilities = listSettingCapabilities();
+    expect(capabilities).toHaveLength(Object.keys(SETTINGS).length);
+    expect(capabilities.find((item) => item.name === "bass")).toMatchObject({
+      type: "integer",
+      minimum: -10,
+      maximum: 10,
+      writable: true,
+      confirmation: "setting_name",
+    });
+    expect(
+      capabilities.find((item) => item.name === "output_fixed"),
+    ).toMatchObject({ writable: false, setAction: null });
   });
 });

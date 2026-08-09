@@ -1,20 +1,15 @@
 # sonos-cli
 
-`sonosctl` is a deterministic, local-first CLI for inspecting and configuring Sonos players over their device-declared UPnP/SOAP API. It discovers capabilities from the current firmware instead of relying on a frozen action list.
+`sonosctl` is a deterministic, local-first JSON CLI for humans and LLM agents
+to inspect and configure Sonos. It discovers the current player's UPnP/SOAP
+capabilities instead of relying on a frozen firmware API list.
 
-## Safety model
+The default interface is non-interactive: JSON goes to stdout, structured
+errors go to stderr, and the exit code is non-zero on failure.
 
-- Reads are allowed without confirmation.
-- High-level writes validate the value, read the current value, require `--confirm <setting>`, write once, and verify by reading back.
-- Raw writes require `--allow-write --confirm <ExactAction>`.
-- Raw destructive actions also require `--allow-destructive`.
-- Tests use fixtures and never contact the LAN.
+## Quick start
 
-The local SOAP interface is device-declared but not a stable public Sonos API. Firmware can add, remove, or change actions. `api describe` exposes the live schema and validation boundaries.
-
-## Install and build
-
-Requirements: Node.js 22+, pnpm 10+, and Bun for the standalone executable.
+Requirements: Node.js 22+, pnpm 10+, and Bun to create the standalone binary.
 
 ```bash
 pnpm install
@@ -23,65 +18,204 @@ pnpm package
 ./dist/sonosctl --help
 ```
 
-For development:
+Use the binary directly:
 
 ```bash
-pnpm dev -- --help
+./dist/sonosctl capabilities
+./dist/sonosctl discover
+./dist/sonosctl status
+```
+
+Global options must precede the command:
+
+```bash
+./dist/sonosctl --host 192.168.1.50 --compact get bass
+```
+
+## Safe mutation workflow
+
+Always plan a change before applying it:
+
+```bash
+# 1. Inspect the accepted types, ranges, and writeability.
+./dist/sonosctl capabilities
+
+# 2. Validate and compare against live state. This never calls the setter.
+./dist/sonosctl set bass 5 --dry-run
+
+# 3. Apply only after receiving authority for this exact change.
+./dist/sonosctl set bass 5 --confirm bass
+
+# 4. Independently read the resulting state when additional proof is needed.
+./dist/sonosctl get bass
+```
+
+A dry-run result is explicit:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "operation": "set_setting",
+    "outcome": "dry_run",
+    "setting": "bass",
+    "before": 4,
+    "requested": 5,
+    "after": null,
+    "changed": true,
+    "dryRun": true,
+    "sideEffect": "none",
+    "wouldCall": "RenderingControl.SetBass"
+  }
+}
+```
+
+Applying a high-level setting performs GET → SOAP setter → GET. Success is
+reported only if readback equals the requested value. If the current value
+already matches, the result is `outcome: "unchanged"` and no setter is called.
+
+## LLM command contract
+
+Prefer these stable commands in this order:
+
+| Intent | Command | Network | Side effect |
+|---|---|---:|---:|
+| Learn accepted settings | `capabilities` | No | None |
+| Locate players | `discover` | LAN reads | None |
+| Read all common state | `settings` | LAN reads | None |
+| Read one value | `get <setting>` | LAN read | None |
+| Plan one change | `set <setting> <value> --dry-run` | LAN read | None |
+| Apply one change | `set <setting> <value> --confirm <setting>` | LAN write | Explicit |
+| Diagnose the coordinator | `doctor` | LAN reads | None |
+| Capture current values | `snapshot` | LAN reads | None |
+| Inspect firmware API | `api list/describe` | LAN reads | None |
+| Plan raw SOAP | `api call ... --dry-run` | Schema read | None |
+
+Agent rules:
+
+1. Run `capabilities`; do not guess setting names, ranges, or enum values.
+2. Use the high-level `get`/`set` interface whenever it covers the request.
+3. Treat `--dry-run` as planning evidence, never as authority to apply.
+4. Pass `--confirm` only when the caller authorized that exact mutation.
+5. Parse `ok`, then use `data.outcome`, `data.sideEffect`, and `data.changed`.
+6. Never report a change from `dry_run`, `unchanged`, or an error result.
+7. Do not use raw destructive actions without separate explicit authority and
+   a rollback plan.
+
+Use `--compact` to emit single-line JSON and reduce tokens:
+
+```bash
+./dist/sonosctl --compact capabilities
 ```
 
 ## Device selection
 
-By default, discovery selects the only soundbar on the LAN. Use `--host` when there are multiple home theaters or multicast discovery is unavailable:
+Discovery selects the only soundbar when possible. If selection is ambiguous,
+the command returns `DEVICE_SELECTION_REQUIRED`. Run `discover`, choose the
+home-theater coordinator, and put `--host <ip>` before the next command.
+
+Sonos addresses can change through DHCP. Discover on each workflow rather than
+persisting an observed IP as durable configuration.
+
+## High-level settings
+
+`capabilities` is the machine-readable source of truth. Current names include:
+
+- `volume`, `mute`, `group_volume`, `group_mute`
+- `bass`, `treble`, `loudness`
+- `sub_enabled`, `sub_gain`, `sub_polarity`
+- `surrounds_enabled`, `surround_tv_level`, `surround_music_level`
+- `surround_music_full` (`ambient` or `full`)
+- `night_mode`, `speech_enhancement`, `tv_dialog_sync`, `height_level`
+- `status_light`, `button_lock`, `ir_repeater`, `ir_led_feedback`
+- `room_calibration`
+- `output_fixed` (read-only)
+
+Firmware support is still checked against the selected device at runtime.
+
+## Live API inventory and raw SOAP
+
+The expert interface enumerates all device-declared services and actions:
 
 ```bash
-sonosctl --host 192.168.1.50 status
+./dist/sonosctl api list
+./dist/sonosctl api describe RenderingControl SetBass
+./dist/sonosctl api call RenderingControl GetBass --arg InstanceID=0
 ```
 
-## Stable high-level interface
+Plan any raw action without invoking its SOAP endpoint:
 
 ```bash
-sonosctl settings
-sonosctl get bass
-sonosctl set bass 4 --confirm bass
-sonosctl set night_mode off --confirm night_mode
-sonosctl snapshot > living-room.json
-sonosctl doctor
+./dist/sonosctl api call RenderingControl SetBass \
+  --arg InstanceID=0 --arg DesiredBass=4 --dry-run
 ```
 
-Supported names are printed by `sonosctl get --help`. They cover volume/mute, tone and loudness, Sub and surround controls, night/speech/dialog/height controls, status light/button lock, IR feedback, group volume, and calibration where the current device supports them.
-
-`snapshot` is read-only in v0.1. It deliberately does not include a bulk restore command: every write remains explicit and independently verified.
-
-## Live API inventory and raw calls
+Raw writes require exact acknowledgement:
 
 ```bash
-sonosctl api list
-sonosctl api describe RenderingControl SetBass
-sonosctl api call RenderingControl GetBass --arg InstanceID=0
-sonosctl api call RenderingControl SetBass \
+./dist/sonosctl api call RenderingControl SetBass \
   --arg InstanceID=0 --arg DesiredBass=4 \
   --allow-write --confirm SetBass
 ```
 
-The raw interface validates required arguments, enumerations, and numeric ranges from the live SCPD document before invoking SOAP. Destructive actions are available only as an expert escape hatch:
+Actions classified as destructive additionally require
+`--allow-destructive`. Risk classification is conservative but partly based on
+action names; the high-level interface is safer. A successful raw write reports
+`outcome: "write_accepted"` and `sideEffect: "accepted"`, not verified state,
+because raw actions do not have a generic readback contract.
 
-```bash
-sonosctl api call DeviceProperties RemoveHTSatellite ... \
-  --allow-write --allow-destructive --confirm RemoveHTSatellite
+See [the validated live inventory](docs/live-api-inventory.md). `api list`
+remains authoritative for the selected firmware.
+
+## JSON and exit-code contract
+
+Successful result:
+
+```json
+{"ok":true,"data":{}}
 ```
 
-Do not use the destructive interface without a current snapshot and a specific rollback plan.
+Failure on stderr with a non-zero exit code:
 
-See [the validated live inventory](docs/live-api-inventory.md) for service-level
-coverage from a Beam Gen 2. `api list` remains authoritative for the current
-firmware.
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "CONFIRMATION_REQUIRED",
+    "message": "Write requires --confirm bass",
+    "hint": "Run with --dry-run first, then pass the exact confirmation token."
+  }
+}
+```
+
+The CLI never asks interactive questions. Callers must not infer success from
+an empty stdout, process silence, or a previous dry-run.
+
+## Snapshots and rollback boundary
+
+`snapshot` captures readable high-level values but v0.2 does not provide bulk
+restore or automatic rollback. A failed readback is reported as failure; it
+does not prove whether the downstream device retained a partial change. Read
+the setting again before deciding whether a retry is safe.
 
 ## API boundary
 
-The official Sonos Control API is cloud/OAuth based and focuses on household groups, playback, and volume. This CLI is local-first because home-theater EQ and device configuration are exposed by the players' local service descriptions. A future cloud adapter can be added without changing the high-level setting names.
+The official Sonos Control API uses cloud OAuth and focuses on households,
+groups, playback, and volume. This CLI is local-first because home-theater EQ
+and device configuration are exposed by local device service descriptions.
 
-## Output contract
+- [Sonos Control API overview](https://docs.sonos.com/reference/about-control-api)
+- [Sonos authorization](https://docs.sonos.com/docs/authorize)
 
-- Successful command results: formatted JSON on stdout.
-- Errors: one JSON object on stderr and a non-zero exit code.
-- Discovery, services, actions, and setting names are sorted for reproducibility.
+## Development
+
+```bash
+pnpm dev -- --help
+pnpm biome check .
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm package
+```
+
+Tests use injected HTTP clients and never contact a real Sonos system.

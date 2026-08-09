@@ -1,10 +1,11 @@
 import { defaultHttpClient, findService, type HttpClient } from "./device.js";
-import { callSoap } from "./soap.js";
+import { OutcomeUnknownError } from "./errors.js";
+import { callSoap, SoapFault } from "./soap.js";
 import type { Device, Scalar, SettingResult } from "./types.js";
 
 type ValueKind = "boolean" | "integer" | "surroundMode" | "onOff";
 
-interface SettingDefinition {
+export interface SettingDefinition {
   service: string;
   getAction: string;
   getArgs: Record<string, string>;
@@ -49,6 +50,81 @@ export const SETTINGS = {
 } satisfies Record<string, SettingDefinition>;
 
 export type SettingName = keyof typeof SETTINGS;
+
+const SETTING_DESCRIPTIONS: Record<SettingName, string> = {
+  bass: "Master bass EQ level",
+  button_lock: "Physical button lock state",
+  group_mute: "Mute state for the coordinator group",
+  group_volume: "Volume for the coordinator group",
+  height_level: "Dolby Atmos height-channel level",
+  ir_led_feedback: "IR command LED feedback state",
+  ir_repeater: "IR repeater state",
+  loudness: "Loudness compensation state",
+  mute: "Master mute state",
+  night_mode: "Night sound compression state",
+  output_fixed: "Whether the audio output volume is fixed",
+  room_calibration: "Room calibration processing state",
+  speech_enhancement: "TV dialogue enhancement state",
+  status_light: "Player status light state",
+  sub_enabled: "Bonded Sub output state",
+  sub_gain: "Bonded Sub level",
+  sub_polarity: "Bonded Sub polarity state",
+  surround_music_full: "Music surround playback mode",
+  surround_music_level: "Surround level for music playback",
+  surround_tv_level: "Surround level for TV playback",
+  surrounds_enabled: "Bonded surround output state",
+  treble: "Master treble EQ level",
+  tv_dialog_sync: "TV dialogue synchronization delay",
+  volume: "Master volume",
+};
+
+export interface SettingCapability {
+  name: SettingName;
+  description: string;
+  type: "boolean" | "integer" | "enum";
+  acceptedValues: string[];
+  minimum: number | null;
+  maximum: number | null;
+  readable: true;
+  writable: boolean;
+  confirmation: "setting_name" | "not_applicable";
+  service: string;
+  getAction: string;
+  setAction: string | null;
+}
+
+export function listSettingCapabilities(): SettingCapability[] {
+  return (Object.keys(SETTINGS).sort() as SettingName[]).map((name) => {
+    const definition = SETTINGS[name];
+    const type =
+      definition.kind === "integer"
+        ? "integer"
+        : definition.kind === "surroundMode"
+          ? "enum"
+          : "boolean";
+    const acceptedValues =
+      definition.kind === "surroundMode"
+        ? ["ambient", "full"]
+        : definition.kind === "boolean" || definition.kind === "onOff"
+          ? ["false", "true"]
+          : [];
+    const writable = definition.setAction !== undefined;
+    return {
+      name,
+      description: SETTING_DESCRIPTIONS[name],
+      type,
+      acceptedValues,
+      minimum: definition.minimum ?? null,
+      maximum: definition.maximum ?? null,
+      readable: true,
+      writable,
+      confirmation: writable ? "setting_name" : "not_applicable",
+      service: definition.service,
+      getAction: definition.getAction,
+      setAction: definition.setAction ?? null,
+    };
+  });
+}
 
 function rc(
   name: string,
@@ -242,54 +318,107 @@ export async function setSetting(
   device: Device,
   name: SettingName,
   value: string,
-  confirm: string | undefined,
-  client: HttpClient = defaultHttpClient,
-): Promise<{
-  setting: string;
-  before: Scalar;
-  requested: Scalar;
-  after: Scalar;
-  changed: boolean;
-}> {
+  options: {
+    confirm?: string;
+    dryRun?: boolean;
+    client?: HttpClient;
+  } = {},
+): Promise<SetSettingResult> {
+  const client = options.client ?? defaultHttpClient;
+  const dryRun = options.dryRun ?? false;
   const definition = SETTINGS[name];
   if (!definition.setAction || !definition.setArgs)
     throw new Error(`Setting is read-only: ${name}`);
-  if (confirm !== name) throw new Error(`Write requires --confirm ${name}`);
+  if (!dryRun && options.confirm !== name)
+    throw new Error(`Write requires --confirm ${name}`);
   const encoded = encode(value, definition);
   const before = await getSetting(device, name, client);
   const requested = decode(encoded, definition.kind);
+  const wouldCall = `${definition.service}.${definition.setAction}`;
+  if (dryRun) {
+    return {
+      operation: "set_setting",
+      outcome: "dry_run",
+      setting: name,
+      before: before.value,
+      requested,
+      after: null,
+      changed: before.value !== requested,
+      dryRun: true,
+      sideEffect: "none",
+      wouldCall,
+    };
+  }
   if (before.value === requested) {
     return {
+      operation: "set_setting",
+      outcome: "unchanged",
       setting: name,
       before: before.value,
       requested,
       after: before.value,
       changed: false,
+      dryRun: false,
+      sideEffect: "none",
+      wouldCall,
     };
   }
   const service = findService(device, definition.service);
-  await callSoap(
-    service,
-    definition.setAction,
-    {
-      ...definition.setArgs,
-      [definition.input]: encoded,
-    },
-    client,
-  );
-  const after = await getSetting(device, name, client);
-  if (after.value !== requested) {
-    throw new Error(
-      `Read-back mismatch: requested ${String(requested)}, got ${String(after.value)}`,
+  let writeAccepted = false;
+  try {
+    await callSoap(
+      service,
+      definition.setAction,
+      {
+        ...definition.setArgs,
+        [definition.input]: encoded,
+      },
+      client,
+    );
+    writeAccepted = true;
+    const after = await getSetting(device, name, client);
+    if (after.value !== requested) {
+      throw new OutcomeUnknownError(
+        `Read-back mismatch for ${name}: requested ${String(requested)}, got ${String(after.value)}`,
+      );
+    }
+    return {
+      operation: "set_setting",
+      outcome: "changed",
+      setting: name,
+      before: before.value,
+      requested,
+      after: after.value,
+      changed: true,
+      dryRun: false,
+      sideEffect: "completed",
+      wouldCall,
+    };
+  } catch (error) {
+    if (error instanceof OutcomeUnknownError) throw error;
+    if (writeAccepted) {
+      throw new OutcomeUnknownError(
+        `Read-back failed for ${name}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (error instanceof SoapFault) throw error;
+    throw new OutcomeUnknownError(
+      `Write outcome unknown for ${name}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  return {
-    setting: name,
-    before: before.value,
-    requested,
-    after: after.value,
-    changed: true,
-  };
+}
+
+export interface SetSettingResult {
+  operation: "set_setting";
+  outcome: "dry_run" | "unchanged" | "changed";
+  setting: string;
+  before: Scalar;
+  requested: Scalar;
+  after: Scalar | null;
+  changed: boolean;
+  dryRun: boolean;
+  sideEffect: "none" | "completed";
+  wouldCall: string;
 }
 
 export async function getAllSettings(device: Device): Promise<SettingResult[]> {
