@@ -1,0 +1,41 @@
+name: Device support report
+description: Report compatibility from a Sonos model or firmware using read-only evidence.
+title: "[device]: "
+labels: [device-support, triage]
+body:
+  - type: markdown
+    attributes:
+      value: Run only read commands or dry-runs. Never attach an unredacted snapshot.
+  - type: input
+    attributes:
+      label: Sonos model
+      placeholder: "Arc Ultra"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Firmware
+      placeholder: "96.0"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Result
+      options:
+        - Fully working
+        - Partially working
+        - Not working
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Redacted doctor summary
+      description: Include service/action counts and unsupported settings; remove host and identifiers.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Notes
+      description: Describe unsupported settings or firmware-specific behavior.
+

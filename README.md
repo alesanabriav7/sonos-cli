@@ -1,13 +1,54 @@
 # sonos-cli
 
+[![CI](https://github.com/alesanabriav7/sonos-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/alesanabriav7/sonos-cli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/alesanabriav7/sonos-cli)](https://github.com/alesanabriav7/sonos-cli/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-22A06B.svg)](LICENSE)
+
 `sonosctl` is a deterministic, local-first JSON CLI for humans and LLM agents
 to inspect and configure Sonos. It discovers the current player's UPnP/SOAP
 capabilities instead of relying on a frozen firmware API list.
 
-The default interface is non-interactive: JSON goes to stdout, structured
-errors go to stderr, and the exit code is non-zero on failure.
+Unlike playback-first Sonos CLIs, `sonosctl` focuses on safe home-theater
+diagnostics and configuration:
 
-## Quick start
+- plan changes with a real zero-write dry-run;
+- verify high-level writes by reading state back;
+- inspect all actions declared by the current firmware;
+- give agents stable JSON outcomes instead of interactive prompts.
+
+| Capability | `sonosctl` | Typical playback-first CLI |
+|---|---:|---:|
+| Home-theater EQ and device settings | 24 stable names | Limited or library-specific |
+| Zero-write planning | `--dry-run` | Usually unavailable |
+| High-level mutation verification | Readback required | Command accepted |
+| Firmware-declared SOAP inventory | Live SCPD schema | Frozen command set |
+| Agent interface | Discriminated JSON | Human-oriented text |
+
+> Independent community project. Not affiliated with or endorsed by Sonos,
+> Inc. The local SOAP surface is device-declared but not a stable public Sonos
+> API.
+
+## Install a release
+
+Download the archive for your platform from
+[GitHub Releases](https://github.com/alesanabriav7/sonos-cli/releases/latest).
+Example for Apple Silicon macOS:
+
+```bash
+VERSION=v0.2.0
+ARCHIVE="sonosctl-${VERSION}-darwin-arm64.tar.gz"
+curl -LO "https://github.com/alesanabriav7/sonos-cli/releases/download/${VERSION}/${ARCHIVE}"
+curl -LO "https://github.com/alesanabriav7/sonos-cli/releases/download/${VERSION}/${ARCHIVE}.sha256"
+shasum -a 256 -c "${ARCHIVE}.sha256"
+tar -xzf "$ARCHIVE"
+install -m 755 sonosctl /usr/local/bin/sonosctl
+sonosctl --version
+```
+
+Release targets: macOS ARM64/x64 and Linux ARM64/x64. macOS binaries are
+ad-hoc signed but not Apple-notarized.
+
+## Build from source
 
 Requirements: Node.js 22+, pnpm 10+, and Bun to create the standalone binary.
 

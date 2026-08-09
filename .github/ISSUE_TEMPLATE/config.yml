@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage and integration question
+    url: https://github.com/alesanabriav7/sonos-cli/discussions
+    about: Ask how to use sonosctl with automation or an LLM agent.
+  - name: Private security report
+    url: https://github.com/alesanabriav7/sonos-cli/security/advisories/new
+    about: Report vulnerabilities without exposing details publicly.
+

@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible CLI failure without including private Sonos identifiers.
+title: "[bug]: "
+labels: [bug, triage]
+body:
+  - type: checkboxes
+    attributes:
+      label: Safety and privacy
+      options:
+        - label: I removed IPs, serial numbers, household IDs, credentials, and OAuth tokens.
+          required: true
+        - label: I reproduced this with a read or dry-run when possible.
+          required: true
+  - type: input
+    attributes:
+      label: sonosctl version
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Platform
+      placeholder: "macOS 15 arm64 or Ubuntu 24.04 x64"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Sonos model and firmware
+      placeholder: "Beam Gen 2, firmware 96.0"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Command
+      description: Replace the device address with HOST and remove sensitive arguments.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Structured output
+      description: Paste the redacted JSON from stdout or stderr.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction and expected result
+      description: Include the smallest deterministic sequence and what should have happened.
+    validations:
+      required: true
+

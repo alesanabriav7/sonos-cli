@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: bun-darwin-arm64
+            platform: darwin-arm64
+          - runner: macos-14
+            target: bun-darwin-x64
+            platform: darwin-x64
+          - runner: ubuntu-latest
+            target: bun-linux-arm64
+            platform: linux-arm64
+          - runner: ubuntu-latest
+            target: bun-linux-x64-baseline
+            platform: linux-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: Build standalone executable
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p release
+          bun build src/cli.ts --compile --target="$TARGET" --outfile sonosctl
+          chmod +x sonosctl
+          if [[ "$PLATFORM" == darwin-* ]]; then
+            codesign --force --sign - sonosctl
+            codesign --verify --verbose=2 sonosctl
+          fi
+          archive="sonosctl-${VERSION}-${PLATFORM}.tar.gz"
+          tar -czf "release/$archive" sonosctl
+          if command -v sha256sum >/dev/null; then
+            (cd release && sha256sum "$archive" > "$archive.sha256")
+          else
+            (cd release && shasum -a 256 "$archive" > "$archive.sha256")
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sonosctl-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sonosctl-*
+          path: release
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
+
