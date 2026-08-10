@@ -2,6 +2,7 @@
 import { Command, Option } from "commander";
 import { findService, inspectDevice, serviceShortName } from "./device.js";
 import { discoverLocations } from "./discovery.js";
+import { type DoctorReport, redactDoctorReport } from "./doctor.js";
 import { errorEnvelope, successEnvelope } from "./output.js";
 import { executeRawAction } from "./raw.js";
 import { classifyAction } from "./risk.js";
@@ -216,7 +217,11 @@ program
   .description(
     "Check discovery, device description, service schemas, and TV audio status",
   )
-  .action(async () => {
+  .option(
+    "--redact",
+    "Support-report mode: omit host, location, and serial number, and scan for unsupported settings",
+  )
+  .action(async (options: { redact?: boolean }) => {
     const device = await resolveDevice(program.opts<GlobalOptions>());
     const schemas = await Promise.all(
       device.services.map(async (service) => ({
@@ -224,12 +229,21 @@ program
         schema: await inspectService(service),
       })),
     );
-    print({
-      ok: true,
+    // The settings scan makes one SOAP call per known setting (see
+    // settings.ts), so it only runs for --redact's support-report mode, not
+    // every plain `doctor` call.
+    const settingsResults = options.redact
+      ? await getAllSettings(device)
+      : [];
+    const report: DoctorReport = {
       device: {
         host: device.host,
+        location: device.location,
         roomName: device.roomName,
         modelName: device.modelName,
+        modelNumber: device.modelNumber,
+        serialNumber: device.serialNumber,
+        softwareVersion: device.softwareVersion,
       },
       services: schemas.length,
       actions: schemas.reduce(
@@ -237,6 +251,13 @@ program
         0,
       ),
       tvAudio: await getTvAudioStatus(device.host),
+      unsupportedSettings: settingsResults.filter(
+        (result) => !result.supported,
+      ),
+    };
+    print({
+      ok: true,
+      ...(options.redact ? redactDoctorReport(report) : report),
     });
   });
 
